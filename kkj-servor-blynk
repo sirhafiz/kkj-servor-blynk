@@ -1,0 +1,146 @@
+#define BLYNK_TEMPLATE_NAME "Smartfishfeeder"
+#define BLYNK_AUTH_TOKEN "xxxx"
+#define BLYNK_TEMPLATE_ID "TMPxxx"
+
+// Pastikan definisi untuk Blynk IoT
+#define BLYNK_FIRMWARE_VERSION "0.1.0"
+#define BLYNK_PRINT Serial
+#include <WiFi.h>
+#include <WiFiManager.h>  // Untuk setup WiFi
+#include <BlynkSimpleEsp32.h>  // Untuk sambungan ke Blynk IoT
+#include <ESP32Servo.h>  // Untuk kawal servo pada ESP32
+#include <NTPClient.h>  // Untuk sync waktu real-time
+#include <WiFiUdp.h>  // Untuk NTP
+
+// Pin servo (signal pin) - sambung ke GPIO 13
+#define SERVO_PIN 13
+
+// Objek servo
+Servo myServo;
+
+// Objek NTP (UTC+8 untuk Malaysia, update setiap 60 saat)
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 28800, 60000);
+
+// Masa feeding (format 24 jam)
+const int pagiHour = 7;
+const int pagiMinute = 0;
+const int tengahariHour = 12;
+const int tengahariMinute = 0;
+const int petangHour = 19;  // 7 petang = 19:00
+const int petangMinute = 0;
+
+// Flag untuk elak feeding berulang
+bool fedPagi = false;
+bool fedTengahari = false;
+bool fedPetang = false;
+
+// Fungsi untuk putar servo 8 kali (4 clockwise, 4 counterclockwise)
+void putarServo(String session) {
+  Serial.println("Memulakan putaran servo untuk " + session + "...");
+  // 4 putaran clockwise, setiap putaran 5 saat
+  for (int i = 0; i < 4; i++) {
+    myServo.write(45);  // Kelajuan sederhana clockwise (adjust jika perlu)
+    delay(5000);  // 5 saat per putaran
+  }
+  // 4 putaran counterclockwise
+  for (int i = 0; i < 4; i++) {
+    myServo.write(135);  // Kelajuan sederhana counterclockwise (adjust jika perlu)
+    delay(5000);  // 5 saat per putaran
+  }
+  myServo.write(90);  // Stop servo
+  Serial.println("Servo telah diputar 8 kali (4 clockwise, 4 counterclockwise)!");
+
+  // Hantar notifikasi berdasarkan sesi
+  if (session == "pagi") {
+    Blynk.logEvent("pagi_feeding", "Pagi feeding selesai");
+  } else if (session == "tengahari") {
+    Blynk.logEvent("tengahari_feeding", "Tengahari feeding selesai");
+  } else if (session == "petang") {
+    Blynk.logEvent("petang_feeding", "Petang feeding selesai");
+  } else if (session == "manual") {
+    Blynk.logEvent("feeding_complete", "Manual feeding selesai");
+  }
+}
+
+// Blynk handler untuk manual switch (V0)
+BLYNK_WRITE(V0) {
+  int switchValue = param.asInt();  // Ambil nilai switch (1=ON, 0=OFF)
+  Serial.print("Switch V0 dikesan: ");
+  Serial.println(switchValue);
+  if (switchValue == 1) {
+    Serial.println("Manual feeding dipicu!");
+    putarServo("manual");  // Putar 8 kali dan hantar notifikasi manual
+    Blynk.virtualWrite(V0, 0);  // Reset switch ke OFF
+  } else {
+    Serial.println("Switch V0 OFF, tiada tindakan.");
+  }
+}
+
+void setup() {
+  // Start Serial untuk debug
+  Serial.begin(115200);
+  Serial.println("Memulakan Smart Fish Feeder...");
+
+  // Setup WiFi Manager
+  WiFiManager wifiManager;
+  wifiManager.autoConnect("SmartFishFeeder_AP");  // Nama AP jika tak connect WiFi
+  Serial.println("WiFi tersambung!");
+
+  // Sambung ke Blynk IoT
+  Blynk.begin(BLYNK_AUTH_TOKEN, WiFi.SSID().c_str(), WiFi.psk().c_str());
+  Serial.println("Menyambung ke Blynk...");
+
+  // Setup servo
+  myServo.attach(SERVO_PIN);
+  myServo.write(90);  // Stop servo pada permulaan
+  Serial.println("Servo diinisialisasi.");
+
+  // Start NTP client
+  timeClient.begin();
+  timeClient.update();
+  Serial.println("NTP client dimulakan.");
+}
+
+void loop() {
+  Blynk.run();  // Jalankan Blynk
+
+  // Update waktu NTP
+  timeClient.update();
+
+  // Dapat waktu semasa
+  int currentHour = timeClient.getHours();
+  int currentMinute = timeClient.getMinutes();
+
+  // Print waktu untuk debug
+  static unsigned long lastPrint = 0;
+  if (millis() - lastPrint >= 60000) {  // Print setiap 1 minit
+    Serial.print("Waktu semasa: ");
+    Serial.print(currentHour);
+    Serial.print(":");
+    Serial.println(currentMinute);
+    lastPrint = millis();
+  }
+
+  // Check untuk feeding auto
+  if (currentHour == pagiHour && currentMinute == pagiMinute && !fedPagi) {
+    Serial.println("Auto feeding pagi dipicu!");
+    putarServo("pagi");  // Putar 8 kali dan hantar notifikasi pagi
+    fedPagi = true;
+  } else if (currentHour == tengahariHour && currentMinute == tengahariMinute && !fedTengahari) {
+    Serial.println("Auto feeding tengahari dipicu!");
+    putarServo("tengahari");  // Putar 8 kali dan hantar notifikasi tengahari
+    fedTengahari = true;
+  } else if (currentHour == petangHour && currentMinute == petangMinute && !fedPetang) {
+    Serial.println("Auto feeding petang dipicu!");
+    putarServo("petang");  // Putar 8 kali dan hantar notifikasi petang
+    fedPetang = true;
+  }
+
+  // Reset flag pada minit seterusnya
+  if (currentMinute != pagiMinute) fedPagi = false;
+  if (currentMinute != tengahariMinute) fedTengahari = false;
+  if (currentMinute != petangMinute) fedPetang = false;
+
+  delay(1000);  // Loop setiap 1 saat
+}
